@@ -41,9 +41,36 @@ typedef unsigned char u8;
 typedef unsigned short u16;
 typedef unsigned int u32;
 
+static int indexed = 0;
 
 enum discrete_state {STATE_OFF, STATE_ON};
 enum gpu_id {IGD, DIS};
+
+static u8 gmux_pio_read8(int port)
+{
+	return inb(GMUX_IOSTART + port);
+}
+
+static void gmux_pio_write8(int port, u8 val)
+{
+        outb(GMUX_IOSTART + port, val);
+}
+
+static u32 gmux_pio_read32(int port)
+{
+	return inl(GMUX_IOSTART + port);
+}
+
+static void gmux_pio_write32(int port, u32 val)
+{
+	int i;
+	u8 tmpval;
+
+	for (i = 0; i < 4; i++) {
+		tmpval = (val >> (i * 8)) & 0xff;
+		outb(GMUX_IOSTART + port + i, tmpval);
+	}
+}
 
 static int gmux_index_wait_ready()
 {
@@ -77,6 +104,16 @@ static int gmux_index_wait_complete()
 	return !!i;
 }
 
+static u8 gmux_index_read8(int port)
+{
+	u8 val;
+	gmux_index_wait_ready();
+	outb(GMUX_IOSTART + GMUX_PORT_READ, (port & 0xff));
+	gmux_index_wait_complete();
+	val = inb(GMUX_IOSTART + GMUX_PORT_VALUE);
+
+	return val;
+}
 
 static void gmux_index_write8(int port, u8 val)
 {
@@ -86,14 +123,15 @@ static void gmux_index_write8(int port, u8 val)
 	gmux_index_wait_complete();
 }
 
-static u8 gmux_index_read8(int port)
+static u32 gmux_index_read32(int port)
 {
-	u8 val;
+	u32 val;
+
 	gmux_index_wait_ready();
 	outb(GMUX_IOSTART + GMUX_PORT_READ, (port & 0xff));
 	gmux_index_wait_complete();
-	val = inb(GMUX_IOSTART + GMUX_PORT_VALUE);
 
+	val = inl(GMUX_IOSTART + GMUX_PORT_VALUE);
 	return val;
 }
 
@@ -112,26 +150,46 @@ static void gmux_index_write32(int port, u32 val)
 	gmux_index_wait_complete();
 }
 
-static u32 gmux_index_read32(int port)
+static u8 gmux_read8(int port)
 {
-	u32 val;
+	if (indexed)
+		return gmux_index_read8(port);
+	else
+		return gmux_pio_read8(port);
+}
 
-	gmux_index_wait_ready();
-	outb(GMUX_IOSTART + GMUX_PORT_READ, (port & 0xff));
-	gmux_index_wait_complete();
+static void gmux_write8(int port, u8 val)
+{
+	if (indexed)
+		gmux_index_write8(port, val);
+	else
+		gmux_pio_write8(port, val);
+}
 
-	val = inl(GMUX_IOSTART + GMUX_PORT_VALUE);
-	return val;
+static u32 gmux_read32(int port)
+{
+	if (indexed)
+		return gmux_index_read32(port);
+	else
+		return gmux_pio_read32(port);
+}
+
+static void gmux_write32(int port, u32 val)
+{
+	if (indexed)
+		gmux_index_write32(port, val);
+	else
+		gmux_pio_write32(port, val);
 }
 
 static void set_discrete_state(enum discrete_state state)
 {
 	if (state == STATE_ON) {	// switch on dGPU
-		gmux_index_write8(GMUX_PORT_DISCRETE_POWER, 1);
-		gmux_index_write8(GMUX_PORT_DISCRETE_POWER, 3);
+		gmux_write8(GMUX_PORT_DISCRETE_POWER, 1);
+		gmux_write8(GMUX_PORT_DISCRETE_POWER, 3);
 	} else {			// switch off dGPU
-		gmux_index_write8(GMUX_PORT_DISCRETE_POWER, 1);
-		gmux_index_write8(GMUX_PORT_DISCRETE_POWER, 0);
+		gmux_write8(GMUX_PORT_DISCRETE_POWER, 1);
+		gmux_write8(GMUX_PORT_DISCRETE_POWER, 0);
 	}
 }
 
@@ -143,16 +201,16 @@ static u8 get_discrete_state()
 static void switchto(enum gpu_id id)
 {
 	if (id == IGD) {	// switch to iGPU
-		gmux_index_write8(GMUX_PORT_SWITCH_DDC, 1);
-		gmux_index_write8(GMUX_PORT_SWITCH_DISPLAY, 2);
-		gmux_index_write8(GMUX_PORT_SWITCH_EXTERNAL, 2);
+		gmux_write8(GMUX_PORT_SWITCH_DDC, 1);
+		gmux_write8(GMUX_PORT_SWITCH_DISPLAY, 2);
+		gmux_write8(GMUX_PORT_SWITCH_EXTERNAL, 2);
 	} else {		// switch to dGPU
-		gmux_index_write8(GMUX_PORT_SWITCH_DDC, 2);
-		gmux_index_write8(GMUX_PORT_SWITCH_DISPLAY, 3);
-		gmux_index_write8(GMUX_PORT_SWITCH_EXTERNAL, 3);
+		gmux_write8(GMUX_PORT_SWITCH_DDC, 2);
+		gmux_write8(GMUX_PORT_SWITCH_DISPLAY, 3);
+		gmux_write8(GMUX_PORT_SWITCH_EXTERNAL, 3);
 	}
 }
-static bool gmux_is_indexed()
+static int gmux_is_indexed()
 {
 	u16 val;
 
@@ -164,36 +222,55 @@ static bool gmux_is_indexed()
 		(inb(GMUX_IOSTART + 0xcd) << 8);
 
 	if (val == 0x55aa)
-		return true;
+		return 1;
 
-	return false;
+	return 0;
 }
 
 static int gmux_get_brightness()
 {
-	return gmux_index_read32(GMUX_PORT_BRIGHTNESS) &
+	return gmux_read32(GMUX_PORT_BRIGHTNESS) &
 	       GMUX_BRIGHTNESS_MASK;
 }
 
 static void gmux_set_brightness(u32 brightness)
 {
-	gmux_index_write32(GMUX_PORT_BRIGHTNESS, brightness);
+	gmux_write32(GMUX_PORT_BRIGHTNESS, brightness);
 }
 
 int main(int argc, char **argv)
 {
 	int fd;
 	u8 ver_major, ver_minor, ver_release;
-	u32 version, brightness;
+	u32 brightness;
 	fd = open("/dev/io", O_RDWR);
 	if (fd < 0) err(1, "open(/dev/io)");
 
-	version = gmux_index_read32(GMUX_PORT_VERSION_MAJOR);
-	ver_major = (version >> 24) & 0xff;
-	ver_minor = (version >> 16) & 0xff;
-	ver_release = (version >> 8) & 0xff;
-	printf("Found gmux version %d.%d.%d\n",
-	    ver_major, ver_minor, ver_release);
+	/*
+	 * Invalid version information may indicate either that the gmux
+	 * device isn't present or that it's a new one that uses indexed
+	 * io
+	 */
+
+	ver_major = gmux_read8(GMUX_PORT_VERSION_MAJOR);
+	ver_minor = gmux_read8(GMUX_PORT_VERSION_MINOR);
+	ver_release = gmux_read8(GMUX_PORT_VERSION_RELEASE);
+	if (ver_major == 0xff && ver_minor == 0xff && ver_release == 0xff) {
+		if (gmux_is_indexed()) {
+			u32 version;
+			indexed = 1;
+			version = gmux_read32(GMUX_PORT_VERSION_MAJOR);
+			ver_major = (version >> 24) & 0xff;
+			ver_minor = (version >> 16) & 0xff;
+			ver_release = (version >> 8) & 0xff;
+		} else {
+			printf("gmux device not present or IO disabled\n");
+			return -1;
+		}
+	}
+	printf("Found gmux version %d.%d.%d [%s]\n", ver_major, ver_minor,
+		ver_release, (indexed ? "indexed" : "classic"));
+
 
 	//switchto(IGD);
 	printf("Discrete state: 0x%X\n", get_discrete_state());
