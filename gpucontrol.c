@@ -1,6 +1,7 @@
 #include <err.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <unistd.h>
 #include <sys/param.h>
 #include <machine/bus.h>
@@ -238,9 +239,19 @@ static void gmux_set_brightness(u32 brightness)
 	gmux_write32(GMUX_PORT_BRIGHTNESS, brightness);
 }
 
+static void usage(void)
+{
+
+	fprintf(stderr, "usage: gpucontrol [-b brightness] [-p]\n");
+	exit(1);
+}
+
+
 int main(int argc, char **argv)
 {
 	int fd;
+	int ch;
+	int bflag = 0, pflag = 0;
 	u8 ver_major, ver_minor, ver_release;
 	u32 brightness;
 	fd = open("/dev/io", O_RDWR);
@@ -271,15 +282,36 @@ int main(int argc, char **argv)
 	printf("Found gmux version %d.%d.%d [%s]\n", ver_major, ver_minor,
 		ver_release, (indexed ? "indexed" : "classic"));
 
-
-	//switchto(IGD);
-	printf("Discrete state: 0x%X\n", get_discrete_state());
-	set_discrete_state(STATE_OFF);
-	printf("Discrete state: 0x%X\n", get_discrete_state());
 	brightness = gmux_get_brightness();
-	printf("brightness=%d\n", brightness);
-	gmux_set_brightness(brightness-10);
+	printf("brightness: %d\n", brightness);
+	printf("Discrete state: 0x%X\n\n", get_discrete_state());
+	
+	while ((ch = getopt(argc, argv, "b:p")) != -1)
+		switch (ch) {
+		case 'b':
+			bflag = 1;
+			break;
+		case 'p':
+			pflag = 1;
+			break;
+		default:
+			usage();
+		}
+	argv += optind;
+
+	if (bflag) {
+		brightness =  atoi(optarg);
+		gmux_set_brightness(brightness);	  
+		printf("Set brightness: %d\n", brightness);
+	}
+	if (pflag){
+		switchto(IGD);
+		set_discrete_state(STATE_OFF);
+		printf("Now Discrete state: 0x%X\n", get_discrete_state());
+	}
+
 	close(fd);
 	return 0;
 }
+
 
